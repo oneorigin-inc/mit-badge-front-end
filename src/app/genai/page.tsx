@@ -9,6 +9,8 @@ import {
   FormControl,
   FormField,
   FormItem,
+  FormLabel,
+  FormDescription,
   FormMessage,
 } from '@/components/ui/form';
 import { Textarea } from '@/components/ui/textarea';
@@ -84,6 +86,18 @@ export default function GenAIPage() {
     const files = event.target.files;
     if (!files || files.length === 0) return;
 
+    // Only allow one file - take the first one
+    if (attachedFiles.length > 0) {
+      toast({
+        title: 'File Already Attached',
+        description: 'Please remove the existing file before uploading a new one.',
+      });
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      return;
+    }
+
     // Ensure we're in browser environment
     if (typeof window === "undefined") {
       console.error("File upload is only available in browser environment");
@@ -93,45 +107,35 @@ export default function GenAIPage() {
     setIsParsingFile(true);
 
     try {
-      const newAttachedFiles: AttachedFile[] = [];
+      // Only process the first file
+      const file = files[0];
 
-      for (const file of Array.from(files)) {
-        // Check for duplicate files by name and size
-        const isDuplicate = attachedFiles.some(
-          existingFile => existingFile.name === file.name && existingFile.size === file.size
-        );
-
-        if (isDuplicate) {
-          toast({
-            title: 'Duplicate File Skipped',
-            description: `File "${file.name}" is already attached.`,
-          });
-          continue;
-        }
-
-        try {
-          const parsedFile = await FileParser.parseFile(file);
-          // console.log(">>>parsedFile", parsedFile)
-          newAttachedFiles.push({
-            file,
-            content: parsedFile.content,
-            name: file.name,
-            size: file.size,
-            type: file.type,
-            wordCount: parsedFile.metadata?.wordCount,
-          });
-        } catch (error) {
-          console.error(`Failed to process ${file.name}:`, error);
-          continue;
-        }
-      }
-
-      if (newAttachedFiles.length > 0) {
-        setAttachedFiles(prev => [...prev, ...newAttachedFiles]);
+      try {
+        const parsedFile = await FileParser.parseFile(file);
+        setAttachedFiles([{
+          file,
+          content: parsedFile.content,
+          name: file.name,
+          size: file.size,
+          type: file.type,
+          wordCount: parsedFile.metadata?.wordCount,
+        }]);
+      } catch (error) {
+        console.error(`Failed to process ${file.name}:`, error);
+        toast({
+          variant: 'destructive',
+          title: 'Upload Failed',
+          description: `Failed to process file: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        });
       }
 
     } catch (error) {
       console.error('File processing error:', error);
+      toast({
+        variant: 'destructive',
+        title: 'Upload Failed',
+        description: 'An error occurred while processing the file.',
+      });
     } finally {
       setIsParsingFile(false);
       if (fileInputRef.current) {
@@ -238,6 +242,7 @@ export default function GenAIPage() {
       try {
         localStorage.setItem('originalContent', combinedContent);
         localStorage.setItem('generationStarted', 'true');
+        localStorage.setItem('isLaiserEnabled', isLaiserEnabled.toString());
       } catch (error) {
         console.error('Error storing content in localStorage:', error);
       }
@@ -263,20 +268,22 @@ export default function GenAIPage() {
 
 
   return (
-    <main className="bg-gray-50 min-h-screen">
+    <main id="main-content" className="bg-gray-50 min-h-screen">
       <div className="container mx-auto p-4 md:p-8">
-        <Button
-          variant="outline"
-          className={`mb-6 transition-all duration-500 ${
-            isVisible 
-              ? 'opacity-100 translate-x-0' 
-              : 'opacity-0 -translate-x-4'
-          }`}
-          onClick={() => router.back()}
-        >
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back
-        </Button>
+        <div className="mb-6">
+          <Button
+            variant="outline"
+            className={`transition-all duration-500 ${
+              isVisible 
+                ? 'opacity-100 translate-x-0' 
+                : 'opacity-0 -translate-x-4'
+            }`}
+            onClick={() => router.back()}
+          >
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Back
+          </Button>
+        </div>
 
         <div className="flex justify-center">
           <div className={`w-full max-w-4xl transition-all duration-700 ${
@@ -287,9 +294,9 @@ export default function GenAIPage() {
             <FormProvider {...form}>
               <Card className="border-0 shadow-xl bg-white">
                 <CardHeader className="pb-8">
-                  <CardTitle className="text-3xl font-bold text-gray-900 mb-3">
+                  <h1 className="text-3xl font-bold font-headline text-gray-900 mb-3">
                     Create a New Credential with AI
-                  </CardTitle>
+                  </h1>
                   <CardDescription className="text-lg text-gray-600 leading-relaxed">
                     Upload your course syllabus or content to get AI-generated credential suggestions.
                   </CardDescription>
@@ -302,10 +309,15 @@ export default function GenAIPage() {
                       name="content"
                       render={({ field }) => (
                         <FormItem>
+                          <FormLabel htmlFor="content-textarea" className="text-base font-semibold text-gray-900 mb-2">
+                            Content
+                          </FormLabel>
                           <FormControl>
                             <div className="relative">
                               <Textarea
-                                placeholder="Specify a writing task..."
+                                id="content-textarea"
+                                aria-label="Content for badge generation"
+                                placeholder="Enter your course content, project summary, or other text that describes what the badge represents...."
                                 className="min-h-[200px] text-base border-gray-200 focus:border-[#429EA6] focus:ring-2 focus:ring-[#429EA6]/20 resize-none text-gray-700 placeholder:text-gray-400 transition-all duration-300"
                                 {...field}
                               />
@@ -317,9 +329,9 @@ export default function GenAIPage() {
                     />
 
 
-                    {/* Display attached files */}
+                    {/* Display attached files - Hidden on mobile/tablet */}
                     {attachedFiles.length > 0 && (
-                      <div className="mt-4 space-y-3 animate-in fade-in-0 duration-500">
+                      <div className="hidden lg:block mt-4 space-y-3 animate-in fade-in-0 duration-500">
                         <label className="text-sm font-semibold text-gray-700">Attached Files:</label>
                         {attachedFiles.map((file, index) => (
                           <Collapsible 
@@ -482,12 +494,13 @@ export default function GenAIPage() {
                     </div>
 
                     <div className="flex items-center justify-between mt-6">
+                      {/* Attach button - Hidden on mobile/tablet */}
                       <Button
                         type="button"
                         variant="ghost"
-                        className="text-gray-600 hover:text-[#429EA6] hover:bg-[#429EA6]/10 transition-all duration-300"
+                        className="hidden lg:flex text-gray-600 hover:text-[#429EA6] hover:bg-[#429EA6]/10 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
                         onClick={() => fileInputRef.current?.click()}
-                        disabled={isParsingFile}
+                        disabled={isParsingFile || attachedFiles.length > 0}
                       >
                         {isParsingFile ? (
                           <>
@@ -501,6 +514,7 @@ export default function GenAIPage() {
                           </>
                         )}
                       </Button>
+                      <div className="lg:hidden"></div> {/* Spacer for mobile */}
 
                       <div className="flex items-center space-x-4">
                         {/* Skills from LAiSER Toggle */}
@@ -522,7 +536,7 @@ export default function GenAIPage() {
                         <Button
                           onClick={handleGenerate}
                           disabled={isParsingFile || !consentChecked}
-                          className="bg-primary hover:bg-gradient-to-r hover:from-pink-500 hover:via-red-500 hover:to-yellow-500 text-white px-6 py-2 font-medium transition-all duration-500 ease-in-out transform hover:scale-105 shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+                          className="bg-primary text-white px-6 py-2 font-medium transition-all duration-500 ease-in-out shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           {animationData && (
                             <div className="w-5 h-5">
@@ -542,8 +556,8 @@ export default function GenAIPage() {
                       type="file"
                       className="hidden"
                       accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                      multiple
                       onChange={handleFileUpload}
+                      disabled={attachedFiles.length > 0}
                     />
 
                   </form>

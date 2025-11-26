@@ -11,7 +11,7 @@ import {
   CardTitle,
   CardFooter,
 } from '@/components/ui/card';
-import { ArrowLeft, Edit, Save, X, Copy, FileDown, RefreshCw, Loader2 } from 'lucide-react';
+import { ArrowLeft, Edit, Save, X, Copy, FileDown, RefreshCw, Loader2, Upload, Trash2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -26,6 +26,13 @@ import {
 import { BadgeConfiguration } from '@/components/genai/badge-configuration';
 import { BadgeImageDisplay } from '@/components/genai/badge-image-display';
 import { SuggestionCard } from '@/components/genai/suggestion-card';
+import { Badge } from '@/components/ui/badge';
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion';
 import { StreamingApiClient } from '@/lib/api';
 import type { BadgeSuggestion } from '@/lib/types';
 
@@ -59,6 +66,8 @@ export default function BadgeEditorPage() {
   const [streamingError, setStreamingError] = useState<string | null>(null);
   const [streamingComplete, setStreamingComplete] = useState(false);
   const [isImageEditModalOpen, setIsImageEditModalOpen] = useState(false);
+  const [selectedSkill, setSelectedSkill] = useState<any | null>(null);
+  const [isSkillModalOpen, setIsSkillModalOpen] = useState(false);
   const [modalImageConfig, setModalImageConfig] = useState<any>(null);
   const [editedImageConfig, setEditedImageConfig] = useState<any>(null);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
@@ -71,6 +80,8 @@ export default function BadgeEditorPage() {
     canvas: true,
     layers: {}
   });
+  const [uploadedLogo, setUploadedLogo] = useState<File | null>(null);
+  const [logoFileName, setLogoFileName] = useState<string>('');
 
   // Auto-hide streaming status after completion
   useEffect(() => {
@@ -94,28 +105,66 @@ export default function BadgeEditorPage() {
   }, [debounceTimer]);
 
   useEffect(() => {
+    // Helper function to extract skills from raw data
+    const extractSkills = (data: any): any[] | undefined => {
+      const skillsArray = data?.skills || 
+                         data?.credentialSubject?.skills || 
+                         data?.credentialSubject?.achievement?.skills;
+      if (skillsArray && Array.isArray(skillsArray)) {
+        // Store full skill objects
+        const skills = skillsArray.filter((skill: any) => skill && typeof skill === 'object');
+        return skills.length > 0 ? skills : undefined;
+      }
+      return undefined;
+    };
+
     // Get selected badge suggestion from localStorage
     const storedSuggestion = localStorage.getItem('selectedBadgeSuggestion');
     if (storedSuggestion) {
       const parsedSuggestion = JSON.parse(storedSuggestion);
-      setBadgeSuggestion(parsedSuggestion);
       
-      // Try to find corresponding raw final data
+      // Try to find corresponding raw final data and extract skills
       try {
         const finalResponses = JSON.parse(localStorage.getItem('finalResponses') || '{}');
         const cardIds = Object.keys(finalResponses);
         
-        // Look for raw data that matches this suggestion
-        for (const cardId of cardIds) {
-          if (finalResponses[cardId] && finalResponses[cardId].credentialSubject?.achievement?.name === parsedSuggestion.title) {
-            setCurrentCardId(cardId);
-            setAvailableCards(cardIds);
-            break;
+        let rawFinalData = null;
+        let cardId = null;
+        
+        // Use the card ID directly if available
+        if (parsedSuggestion.cardId && finalResponses[parsedSuggestion.cardId]) {
+          cardId = parsedSuggestion.cardId.toString();
+          rawFinalData = finalResponses[parsedSuggestion.cardId];
+          setCurrentCardId(cardId);
+          setAvailableCards(cardIds);
+        } else {
+          // Fallback: Look for raw data that matches this suggestion by name (backwards compatibility)
+          for (const id of cardIds) {
+            if (finalResponses[id] && finalResponses[id].credentialSubject?.achievement?.name === parsedSuggestion.title) {
+              cardId = id;
+              rawFinalData = finalResponses[id];
+              setCurrentCardId(cardId);
+              setAvailableCards(cardIds);
+              break;
+            }
+          }
+        }
+        
+        // Extract skills from raw final data and merge with parsedSuggestion
+        if (rawFinalData) {
+          console.log('[Editor] Raw final data:', rawFinalData);
+          const skills = extractSkills(rawFinalData);
+          console.log('[Editor] Extracted skills:', skills);
+          if (skills) {
+            parsedSuggestion.skills = skills;
+            console.log('[Editor] Updated parsedSuggestion with skills:', parsedSuggestion);
           }
         }
       } catch (error) {
         console.error('Error loading raw final data for selectedBadgeSuggestion:', error);
       }
+      
+      setBadgeSuggestion(parsedSuggestion);
     } else {
       // Try to load from finalResponses if no selectedBadgeSuggestion
       try {
@@ -127,6 +176,9 @@ export default function BadgeEditorPage() {
           const firstCardId = cardIds[0];
           const rawFinalData = finalResponses[firstCardId];
           
+          // Extract skills
+          const skills = extractSkills(rawFinalData);
+          
           // Extract mapped suggestion from raw final data
           let mappedSuggestion;
           if (rawFinalData.credentialSubject && rawFinalData.credentialSubject.achievement) {
@@ -137,6 +189,7 @@ export default function BadgeEditorPage() {
               description: achievement.description,
               criteria: achievement.criteria?.narrative || achievement.description,
               image: achievement.image?.id || undefined,
+              skills: skills,
             };
           } else {
             // Legacy API format: { badge_name, badge_description, criteria: { narrative } }
@@ -145,6 +198,7 @@ export default function BadgeEditorPage() {
               description: rawFinalData.badge_description,
               criteria: rawFinalData.criteria?.narrative || rawFinalData.badge_description,
               image: undefined,
+              skills: skills,
             };
           }
           
@@ -185,20 +239,70 @@ export default function BadgeEditorPage() {
     setUserPrompt(prompt);
   }, []);
 
-  const handleEditImage = () => {
+  const handleEditImage = async () => {
     // Get image config from finalResponses if available
-    const originalConfig = currentCardId ? 
-      JSON.parse(localStorage.getItem('finalResponses') || '{}')[currentCardId]?.imageConfig || null : 
+    let originalConfig = currentCardId ?
+      JSON.parse(localStorage.getItem('finalResponses') || '{}')[currentCardId]?.imageConfig || null :
       null;
+
+    // Process config to ensure default values for all shapes
+    if (originalConfig) {
+      const configWithDefaults = JSON.parse(JSON.stringify(originalConfig));
+      if (configWithDefaults.layers) {
+        configWithDefaults.layers.forEach((layer: any) => {
+          if (layer.shape === 'rounded_rect') {
+            if (!layer.params) {
+              layer.params = {};
+            }
+            // Always set radius to 50 for rounded_rect
+            layer.params.radius = 50;
+            // Set width and height to 450 if not already set
+            layer.params.width = layer.params.width || 450;
+            layer.params.height = layer.params.height || 450;
+          } else if (layer.shape === 'hexagon' || layer.shape === 'circle') {
+            if (!layer.params) {
+              layer.params = {};
+            }
+            // Always set radius to 250 for hexagon and circle
+            layer.params.radius = 250;
+          }
+        });
+      }
+      // Use the processed config as the source of truth
+      originalConfig = configWithDefaults;
+    }
+
     setModalImageConfig(originalConfig);
-    // Create a deep copy for editing
     setEditedImageConfig(originalConfig ? JSON.parse(JSON.stringify(originalConfig)) : null);
     setGeneratedImage(null);
     setIsImageEditModalOpen(true);
 
-    // Generate initial image immediately (no debounce for first load)
+    let restoredLogoFile: File | null = null;
+
+    // Restore uploaded logo if it exists in config
+    if (originalConfig?.logoBase64 && originalConfig?.logoFileName) {
+      try {
+        // Convert base64 to File object
+        const response = await fetch(originalConfig.logoBase64);
+        const blob = await response.blob();
+        const file = new File([blob], originalConfig.logoFileName, {
+          type: originalConfig.logoFileType || 'image/png'
+        });
+        setUploadedLogo(file);
+        setLogoFileName(originalConfig.logoFileName);
+        restoredLogoFile = file; // Store the restored file to pass to generateImage
+      } catch (error) {
+        console.error('Failed to restore logo from config:', error);
+      }
+    } else {
+      // Clear logo state if no logo in config
+      setUploadedLogo(null);
+      setLogoFileName('');
+    }
+
+    // Generate initial image immediately with restored logo file (if exists)
     if (originalConfig) {
-      generateImage(originalConfig);
+      generateImage(originalConfig, restoredLogoFile);
     }
   };
 
@@ -292,22 +396,40 @@ export default function BadgeEditorPage() {
     });
   };
 
-  const generateImage = async (config?: any) => {
+  const generateImage = async (config?: any, logo?: File | null) => {
     const configToUse = config || editedImageConfig;
     if (!configToUse) return;
-    
+
     setIsGeneratingImage(true);
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/badge/generate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(configToUse),
-      });
-      
+      let response;
+
+      // Use the logo parameter if provided, otherwise fall back to uploadedLogo state
+      const logoToUse = logo !== undefined ? logo : uploadedLogo;
+
+      // If logo is uploaded, use FormData API
+      if (logoToUse) {
+        const formData = new FormData();
+        formData.append('logo', logoToUse);
+        formData.append('config', JSON.stringify(configToUse));
+
+        response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/badge/generate-with-logo`, {
+          method: 'POST',
+          body: formData,
+        });
+      } else {
+        // Use regular JSON API
+        response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/badge/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(configToUse),
+        });
+      }
+
       const result = await response.json();
-      
+
       if (result.success && result.data?.base64) {
         setGeneratedImage(result.data.base64);
       } else {
@@ -326,13 +448,86 @@ export default function BadgeEditorPage() {
     if (debounceTimer) {
       clearTimeout(debounceTimer);
     }
-    
+
     // Set new timer
     const newTimer = setTimeout(() => {
       generateImage(config);
-    }, 1500);
-    
+    }, 500);
+
     setDebounceTimer(newTimer);
+  };
+
+  const handleLogoUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    // Validate file type
+    const validTypes = ['image/png', 'image/svg+xml'];
+    if (!validTypes.includes(file.type)) {
+      toast({
+        variant: 'destructive',
+        title: 'Invalid File Type',
+        description: 'Please upload a PNG or SVG file only.',
+      });
+      return;
+    }
+
+    // Validate file size (max 5MB)
+    const maxSize = 5 * 1024 * 1024; // 5MB in bytes
+    if (file.size > maxSize) {
+      toast({
+        variant: 'destructive',
+        title: 'File Too Large',
+        description: 'Please upload a file smaller than 5MB.',
+      });
+      return;
+    }
+
+    // Store the file and its name
+    setUploadedLogo(file);
+    setLogoFileName(file.name);
+
+    // Convert file to base64 synchronously (wait for it to complete)
+    const base64String = await new Promise<string>((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.readAsDataURL(file);
+    });
+
+    // Update config with base64 (this completes before generateImage is called)
+    setEditedImageConfig((prev: any) => ({
+      ...prev,
+      logoBase64: base64String,
+      logoFileName: file.name,
+      logoFileType: file.type
+    }));
+
+    toast({
+      title: 'Logo Uploaded',
+      description: `${file.name} has been uploaded successfully.`,
+    });
+
+    // Trigger immediate image generation with the uploaded logo
+    generateImage(editedImageConfig, file);
+  };
+
+  const handleRemoveLogo = () => {
+    setUploadedLogo(null);
+    setLogoFileName('');
+
+    // Remove logo data from config
+    setEditedImageConfig((prev: any) => {
+      const { logoBase64, logoFileName, logoFileType, ...rest } = prev || {};
+      return rest;
+    });
+
+    toast({
+      title: 'Logo Removed',
+      description: 'The logo has been removed.',
+    });
+
+    // Trigger immediate image regeneration without logo
+    generateImage(editedImageConfig, null);
   };
 
   const switchToCard = (cardId: string) => {
@@ -505,6 +700,11 @@ export default function BadgeEditorPage() {
     }
   };
 
+  const handleSkillClick = (skill: any) => {
+    setSelectedSkill(skill);
+    setIsSkillModalOpen(true);
+  };
+
   const handleEditField = (field: string, currentValue: string) => {
     setEditingField(field);
     setEditValues(prev => ({ ...prev, [field]: currentValue }));
@@ -596,18 +796,33 @@ export default function BadgeEditorPage() {
   const generateBadgeJSON = () => {
     // Use selectedBadgeSuggestion to generate JSON
     if (!badgeSuggestion) return null;
-    
+
+    const achievement: any = {
+      "name": badgeSuggestion.title,
+      "description": badgeSuggestion.description,
+      "criteria": {
+        "narrative": badgeSuggestion.criteria
+      },
+      "image": {
+        "id": badgeSuggestion.image || "",
+        "type": "Image"
+      }
+    };
+
+    // Add alignment array if skills exist
+    if (badgeSuggestion.skills && badgeSuggestion.skills.length > 0) {
+      achievement.alignment = badgeSuggestion.skills.map((skill: any) => ({
+        type: skill.type || "Alignment",
+        targetType: skill.targetType || "ESCO:Skill",
+        targetName: skill.targetName,
+        targetDescription: skill.targetDescription,
+        targetUrl: skill.targetUrl
+      }));
+    }
+
     return {
-      "achievement": {
-        "name": badgeSuggestion.title,
-        "description": badgeSuggestion.description,
-        "criteria": {
-          "narrative": badgeSuggestion.criteria
-        },
-        "image": {
-          "id": badgeSuggestion.image || "",
-          "type": "Image"
-        }
+      "credentialSubject": {
+        "achievement": achievement
       }
     };
   };
@@ -656,48 +871,28 @@ export default function BadgeEditorPage() {
 
   if (!badgeSuggestion) {
     return (
-        <main className="container mx-auto bg-gray-50 p-4 md:p-8 flex items-center justify-center min-h-[calc(100vh-80px)]">
-          <div className="text-center">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
-            <p className="text-gray-600 font-body">Loading badge suggestion...</p>
-          </div>
-        </main>
-    );
-  }
-
-  // Add null check for badgeSuggestion
-  if (!badgeSuggestion) {
-    return (
-        <main className="container mx-auto bg-gray-50 p-4 md:p-8">
-          <Button
-            variant="outline"
-            className="mb-6"
-            onClick={() => router.push('/genai/suggestions')}
-          >
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Back to Suggestions
-          </Button>
-          <div className="text-center py-8">
-            <h2 className="text-xl font-semibold text-gray-900 mb-2">No Suggestion Available</h2>
-            <p className="text-gray-600">The selected suggestion could not be loaded.</p>
-          </div>
-        </main>
+      <main className="container mx-auto bg-gray-50 p-4 md:p-8 flex items-center justify-center min-h-[calc(100vh-80px)]">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
+          <p className="text-gray-600 font-body">Loading badge suggestion...</p>
+        </div>
+      </main>
     );
   }
 
   return (
-      <main className="container mx-auto bg-gray-50 p-4 md:p-8">
-        <Button
-          variant="outline"
-          className="mb-6"
-          onClick={() => router.push('/genai/suggestions')}
-        >
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to Suggestions
-        </Button>
+    <main id="main-content" className="container mx-auto bg-gray-50 p-4 md:p-8">
+      <Button
+        variant="outline"
+        className="mb-6"
+        onClick={() => router.push('/genai/suggestions')}
+      >
+        <ArrowLeft className="mr-2 h-4 w-4" />
+        Back to Suggestions
+      </Button>
 
-        {/* 3-Column Layout */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-[calc(100vh-200px)]">
+      {/* 3-Column Layout */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-[calc(100vh-200px)]">
           {/* Column 1: Configuration */}
           <div className="lg:col-span-3">
             <BadgeConfiguration 
@@ -751,8 +946,8 @@ export default function BadgeEditorPage() {
                   }}
                 />
               )
-            ) : (
-              <Card className="border-[#429EA6] shadow-lg bg-white h-full">
+              ) : (
+              <Card className="border-[#429EA6] shadow-lg bg-white">
                 <CardHeader className="pb-8">
                   <div className="mb-3">
                     <CardTitle className="text-3xl font-bold text-gray-900">
@@ -906,16 +1101,39 @@ export default function BadgeEditorPage() {
                   )}
                 </div>
 
-                {/* <div>
-                  <label className="text-sm font-semibold text-gray-700 mb-2 block">Badge Image:</label>
-                  <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
-                    <img
-                      src={badgeSuggestion.image}
-                      alt="Generated badge"
-                      className="w-32 h-32 object-contain rounded-lg border border-gray-300"
-                    />
+                {/* Skills Section - Inside Badge Editor */}
+                {badgeSuggestion.skills && badgeSuggestion.skills.length > 0 && (
+                  <div className="mt-6">
+                    <Accordion type="single" collapsible defaultValue="skills">
+                      <AccordionItem value="skills" className="border-[#429EA6] bg-gray-50 rounded-lg">
+                        <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                          <div className="flex items-center justify-between w-full pr-4">
+                            <h3 className="text-base font-bold text-gray-900">Skills from LAiSER</h3>
+                            {/* <Badge variant="secondary" className="bg-[#429EA6] text-white ml-2">
+                              {badgeSuggestion.skills.length}
+                            </Badge> */}
+                          </div>
+                        </AccordionTrigger>
+                        <AccordionContent className="px-4 pb-4">
+                          <div className="flex flex-wrap gap-2 mt-2">
+                            {badgeSuggestion.skills.map((skillObj, index) => (
+                              skillObj.targetName && (
+                                <button
+                                  key={index}
+                                  onClick={() => handleSkillClick(skillObj)}
+                                  className="px-3 py-1.5 rounded-full bg-gradient-to-r from-[#429EA6]/10 to-[#234467]/10 text-[#234467] border border-[#429EA6]/30 text-xs font-semibold hover:from-[#429EA6]/20 hover:to-[#234467]/20 hover:border-[#429EA6]/50 transition-all cursor-pointer"
+                                >
+                                  {skillObj.targetName}
+                                </button>
+                              )
+                            ))}
+                          </div>
+                        </AccordionContent>
+                      </AccordionItem>
+                    </Accordion>
                   </div>
-                </div> */}
+                )}
+
               </CardContent>
 
               <CardFooter className="px-8 pb-8 flex justify-end">
@@ -925,49 +1143,125 @@ export default function BadgeEditorPage() {
                       className="bg-primary hover:bg-primary/90 text-white"
                       onClick={() => setIsModalOpen(true)}
                     >
-                      Generate Badge
+                      Generate JSON
                     </Button>
                   </DialogTrigger>
-                  <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
-                    <DialogHeader>
-                      <DialogTitle className="text-2xl font-bold text-gray-900">
-                        Badge JSON
-                      </DialogTitle>
-                      <DialogDescription className="text-gray-600">
-                        Copy or export the badge JSON structure below.
-                      </DialogDescription>
-                    </DialogHeader>
-                    
-                    <div className="space-y-4">
-                      <div className="bg-gray-50 rounded-lg p-4 border">
-                        <pre className="text-sm font-mono text-gray-800 whitespace-pre-wrap overflow-x-auto">
+                  <DialogContent className="max-w-4xl h-[80vh] flex flex-col">
+                    {/* Fixed Header */}
+                    <div className="flex-shrink-0 -mx-6 -mt-6 px-6 py-4 border-b bg-white">
+                      <DialogHeader>
+                        <DialogTitle className="text-2xl font-bold text-gray-900">
+                          Badge JSON
+                        </DialogTitle>
+                        {/* <DialogDescription className="text-gray-600">
+                          Copy or export the badge JSON structure below.
+                        </DialogDescription> */}
+                      </DialogHeader>
+                    </div>
+
+                    {/* Scrollable JSON Content */}
+                    <div className="flex-1 overflow-auto -mx-6 px-6 py-4 min-h-0">
+                      <div className="bg-gray-50 rounded-lg p-4 border overflow-auto">
+                        <pre className="text-sm font-mono text-gray-800 whitespace-pre">
                           {JSON.stringify(generateBadgeJSON(), null, 2)}
                         </pre>
                       </div>
-                      
-                      <div className="flex gap-3">
-                        <Button
-                          variant="outline"
-                          onClick={handleCopyJSON}
-                          className="flex items-center gap-2"
-                        >
-                          <Copy className="h-4 w-4" />
-                          Copy JSON
-                        </Button>
-                        <Button
-                          onClick={handleExportJSON}
-                          className="bg-primary hover:bg-primary/90 text-white flex items-center gap-2"
-                        >
-                          <FileDown className="h-4 w-4" />
-                          Export JSON
-                        </Button>
-                      </div>
+                    </div>
+
+                    {/* Fixed Footer */}
+                    <div className="flex-shrink-0 -mx-6 -mb-6 px-6 py-4 border-t bg-white flex gap-3">
+                      <Button
+                        variant="outline"
+                        onClick={handleCopyJSON}
+                        className="flex items-center gap-2"
+                      >
+                        <Copy className="h-4 w-4" />
+                        Copy JSON
+                      </Button>
+                      <Button
+                        onClick={handleExportJSON}
+                        className="bg-primary hover:bg-primary/90 text-white flex items-center gap-2"
+                      >
+                        <FileDown className="h-4 w-4" />
+                        Export JSON
+                      </Button>
                     </div>
                   </DialogContent>
                 </Dialog>
               </CardFooter>
             </Card>
             )}
+
+            {/* Skill Details Modal */}
+            <Dialog open={isSkillModalOpen} onOpenChange={setIsSkillModalOpen}>
+              <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle className="text-2xl font-bold text-gray-900">
+                    {selectedSkill?.targetName || 'Skill Details'}
+                  </DialogTitle>
+                  {selectedSkill?.targetUrl && (
+                    <DialogDescription>
+                      <a
+                        href={selectedSkill.targetUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[#429EA6] hover:underline inline-flex items-center gap-1"
+                      >
+                        View URL →
+                      </a>
+                    </DialogDescription>
+                  )}
+                </DialogHeader>
+
+                <div className="space-y-6 mt-4">
+                  {/* Description */}
+                  {selectedSkill?.targetDescription && (
+                    <div>
+                      <h4 className="text-sm font-semibold text-gray-700 mb-2">Description</h4>
+                      <p className="text-sm text-gray-600 leading-relaxed">{selectedSkill.targetDescription}</p>
+                    </div>
+                  )}
+
+                  {/* Knowledge Required */}
+                  {selectedSkill?.['Knowledge Required'] && Array.isArray(selectedSkill['Knowledge Required']) && selectedSkill['Knowledge Required'].length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-semibold text-gray-700 mb-2">Knowledge Required</h4>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedSkill['Knowledge Required'].map((item: string, idx: number) => (
+                          <Badge key={idx} variant="outline" className="text-sm py-1 px-3">
+                            {item}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Task Abilities */}
+                  {selectedSkill?.['Task Abilities'] && Array.isArray(selectedSkill['Task Abilities']) && selectedSkill['Task Abilities'].length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-semibold text-gray-700 mb-2">Task Abilities</h4>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedSkill['Task Abilities'].map((item: string, idx: number) => (
+                          <Badge key={idx} variant="outline" className="text-sm py-1 px-3">
+                            {item}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Skill Tag */}
+                  {selectedSkill?.['Skill Tag'] && (
+                    <div>
+                      <h4 className="text-sm font-semibold text-gray-700 mb-2">Skill Tag</h4>
+                      <Badge variant="secondary" className="text-sm py-1 px-3">
+                        {selectedSkill['Skill Tag']}
+                      </Badge>
+                    </div>
+                  )}
+                </div>
+              </DialogContent>
+            </Dialog>
           </div>
 
           {/* Column 3: Badge Image Display */}
@@ -980,7 +1274,7 @@ export default function BadgeEditorPage() {
           </div>
         </div>
 
-        {/* Image Edit Modal */}
+      {/* Image Edit Modal */}
         <Dialog open={isImageEditModalOpen} onOpenChange={(open) => {
           if (!open) {
             // When closing, don't auto-apply changes - let user decide
@@ -1003,7 +1297,7 @@ export default function BadgeEditorPage() {
                     Customize your badge image settings and configuration.
                   </DialogDescription>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 pr-8">
                   <Button
                     onClick={handleApplyImageChanges}
                     disabled={!generatedImage}
@@ -1037,19 +1331,40 @@ export default function BadgeEditorPage() {
                   {editedImageConfig?.layers?.map((layer: any, index: number) => {
                     const layerType = layer.type;
                     const isActive = accordionStates.layers[index];
-                    
+
+                    // Don't render BackgroundLayer
+                    if (layerType === 'BackgroundLayer') {
+                      return null;
+                    }
+
+                    // Get display name for layer
+                    let displayName = layerType;
+                    if (layerType === 'ShapeLayer') {
+                      displayName = 'Shape';
+                    } else if (layerType === 'LogoLayer') {
+                      displayName = 'Logo';
+                    } else if (layerType === 'ImageLayer') {
+                      displayName = 'Image';
+                    } else if (layerType === 'TextLayer') {
+                      // Count how many TextLayers appear before this one
+                      const textLayerCount = editedImageConfig.layers
+                        .slice(0, index)
+                        .filter((l: any) => l.type === 'TextLayer').length + 1;
+                      displayName = `Text ${textLayerCount}`;
+                    }
+
                     return (
                       <button
-                        key={index} 
+                        key={index}
                         className={`w-full p-3 mb-2 text-left rounded-lg border transition-all duration-200 ${
-                          isActive 
-                            ? 'bg-[#429EA6] text-white border-[#429EA6] shadow-md' 
+                          isActive
+                            ? 'bg-[#429EA6] text-white border-[#429EA6] shadow-md'
                             : 'bg-white text-gray-700 border-gray-200 hover:border-[#429EA6] hover:bg-[#429EA6]/5'
                         }`}
                         onClick={() => toggleAccordion('layer', index)}
                       >
                         <span className="text-sm font-medium">
-                          {layerType}
+                          {displayName}
                         </span>
                       </button>
                     );
@@ -1079,12 +1394,12 @@ export default function BadgeEditorPage() {
                           return (
                             <div className="space-y-4">
                             {/* BackgroundLayer */}
-                            {layerType === 'BackgroundLayer' && (
+                            {/* {layerType === 'BackgroundLayer' && (
                               <>
                                 <div>
                                   <label className="block text-xs font-medium text-gray-600 mb-1">Mode</label>
-                                  <select 
-                                    value={layer.mode || 'solid'} 
+                                  <select
+                                    value={layer.mode || 'solid'}
                                     onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.mode`, e.target.value)}
                                     className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#429EA6] focus:border-transparent"
                                   >
@@ -1095,31 +1410,58 @@ export default function BadgeEditorPage() {
                                 <div>
                                   <label className="block text-xs font-medium text-gray-600 mb-1">Color</label>
                                   <div className="flex items-center space-x-2">
-                                    <input 
-                                      type="color" 
-                                      value={layer.color || '#FFFFFF'} 
+                                    <input
+                                      type="color"
+                                      value={layer.color || '#FFFFFF'}
                                       onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.color`, e.target.value)}
                                       className="w-8 h-8 border border-gray-300 rounded cursor-pointer"
                                     />
-                                    <input 
-                                      type="text" 
-                                      value={layer.color || '#FFFFFF'} 
+                                    <input
+                                      type="text"
+                                      value={layer.color || '#FFFFFF'}
                                       onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.color`, e.target.value)}
                                       className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#429EA6] focus:border-transparent"
                                     />
                                   </div>
                                 </div>
                               </>
-                            )}
+                            )} */}
                               
                             {/* ShapeLayer */}
                             {layerType === 'ShapeLayer' && (
                               <>
                                 <div>
                                   <label className="block text-xs font-medium text-gray-600 mb-1">Shape *</label>
-                                  <select 
-                                    value={layer.shape || ''} 
-                                    onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.shape`, e.target.value)}
+                                  <select
+                                    value={layer.shape || ''}
+                                    onChange={(e) => {
+                                      const newShape = e.target.value;
+
+                                      // Create a deep copy of the config
+                                      const updatedConfig = JSON.parse(JSON.stringify(editedImageConfig));
+
+                                      // Update the shape
+                                      updatedConfig.layers[activeLayerIndex].shape = newShape;
+
+                                      // Set default params based on shape type
+                                      if (newShape === 'rounded_rect') {
+                                        if (!updatedConfig.layers[activeLayerIndex].params) {
+                                          updatedConfig.layers[activeLayerIndex].params = {};
+                                        }
+                                        updatedConfig.layers[activeLayerIndex].params.radius = 50;
+                                        updatedConfig.layers[activeLayerIndex].params.width = updatedConfig.layers[activeLayerIndex].params.width || 450;
+                                        updatedConfig.layers[activeLayerIndex].params.height = updatedConfig.layers[activeLayerIndex].params.height || 450;
+                                      } else if (newShape === 'hexagon' || newShape === 'circle') {
+                                        if (!updatedConfig.layers[activeLayerIndex].params) {
+                                          updatedConfig.layers[activeLayerIndex].params = {};
+                                        }
+                                        updatedConfig.layers[activeLayerIndex].params.radius = 250;
+                                      }
+
+                                      // Update state and generate image
+                                      setEditedImageConfig(updatedConfig);
+                                      generateImage(updatedConfig);
+                                    }}
                                     className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#429EA6] focus:border-transparent"
                                   >
                                     <option value="hexagon">Hexagon</option>
@@ -1177,14 +1519,16 @@ export default function BadgeEditorPage() {
                                               />
                                             </div>
                                           </div>
-                                          <div className="flex items-center space-x-2">
-                                            <input 
-                                              type="checkbox" 
-                                              checked={layer.fill.vertical || true} 
-                                              onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.fill.vertical`, e.target.checked)}
-                                              className="rounded" 
-                                            />
-                                            <label className="text-xs text-gray-600">Vertical Gradient</label>
+                                          <div>
+                                            <label className="block text-xs font-medium text-gray-600 mb-1">Gradient Direction</label>
+                                            <select
+                                              value={layer.fill.vertical ? 'vertical' : 'horizontal'}
+                                              onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.fill.vertical`, e.target.value === 'vertical')}
+                                              className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#429EA6] focus:border-transparent"
+                                            >
+                                              <option value="vertical">Vertical</option>
+                                              <option value="horizontal">Horizontal</option>
+                                            </select>
                                           </div>
                                         </>
                                       ) : (
@@ -1242,34 +1586,36 @@ export default function BadgeEditorPage() {
                                   
                                   {layer.params && (
                                     <>
-                                      {layer.params.radius && (
+                                      {(layer.shape === 'hexagon' || layer.shape === 'circle' || layer.shape === 'rounded_rect') && (
                                         <div>
-                                          <label className="block text-xs font-medium text-gray-600 mb-1">Radius</label>
-                                          <input 
-                                            type="number" 
-                                            value={layer.params.radius} 
+                                          <label className="block text-xs font-medium text-gray-600 mb-1">
+                                            {layer.shape === 'rounded_rect' ? 'Corner Radius' : 'Size'}
+                                          </label>
+                                          <input
+                                            type="number"
+                                            value={layer.params?.radius || (layer.shape === 'rounded_rect' ? 50 : 250)}
                                             onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.params.radius`, parseInt(e.target.value))}
                                             className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#429EA6] focus:border-transparent"
                                           />
                                         </div>
                                       )}
-                                      {layer.params.width && (
+                                      {layer.shape === 'rounded_rect' && (
                                         <div>
                                           <label className="block text-xs font-medium text-gray-600 mb-1">Width</label>
-                                          <input 
-                                            type="number" 
-                                            value={layer.params.width} 
+                                          <input
+                                            type="number"
+                                            value={layer.params?.width || 450}
                                             onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.params.width`, parseInt(e.target.value))}
                                             className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#429EA6] focus:border-transparent"
                                           />
                                         </div>
                                       )}
-                                      {layer.params.height && (
+                                      {layer.shape === 'rounded_rect' && (
                                         <div>
                                           <label className="block text-xs font-medium text-gray-600 mb-1">Height</label>
-                                          <input 
-                                            type="number" 
-                                            value={layer.params.height} 
+                                          <input
+                                            type="number"
+                                            value={layer.params?.height || 450}
                                             onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.params.height`, parseInt(e.target.value))}
                                             className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#429EA6] focus:border-transparent"
                                           />
@@ -1284,54 +1630,109 @@ export default function BadgeEditorPage() {
                               {layerType === 'LogoLayer' && (
                                 <>
                                   <div>
-                                    <label className="block text-xs font-medium text-gray-600 mb-1">Path</label>
-                                    <input 
-                                      type="text" 
-                                      value={layer.path || ''} 
-                                      onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.path`, e.target.value)}
-                                      className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#429EA6] focus:border-transparent"
+                                    <label className="block text-xs font-medium text-gray-600 mb-1">Upload Logo</label>
+                                    <input
+                                      type="file"
+                                      id="logo-upload-input"
+                                      accept=".png,.svg"
+                                      onChange={handleLogoUpload}
+                                      className="hidden"
                                     />
+                                    {!logoFileName ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => document.getElementById('logo-upload-input')?.click()}
+                                        className="w-full px-3 py-2 text-sm border border-[#429EA6] text-[#429EA6] rounded hover:bg-[#429EA6] hover:text-white transition-colors flex items-center justify-center gap-2"
+                                      >
+                                        <Upload className="h-4 w-4" />
+                                        Choose Logo File
+                                      </button>
+                                    ) : (
+                                      <div className="flex items-center gap-2">
+                                        <div className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded bg-gray-50 text-gray-700 truncate">
+                                          {logoFileName}
+                                        </div>
+                                        <button
+                                          type="button"
+                                          onClick={handleRemoveLogo}
+                                          className="px-2 py-2 text-sm border border-red-300 text-red-600 rounded hover:bg-red-50 transition-colors"
+                                          title="Remove logo"
+                                        >
+                                          <Trash2 className="h-4 w-4" />
+                                        </button>
+                                      </div>
+                                    )}
+                                    <p className="text-xs text-gray-500 mt-1">Supported: PNG, SVG (max 5MB)</p>
                                   </div>
-                                  {layer.size && (
+                                  {layer.size !== undefined && (
                                     <div>
                                       <label className="block text-xs font-medium text-gray-600 mb-1">Size *</label>
-                                      <div className="flex items-center space-x-2">
-                                        <input 
-                                          type="checkbox" 
-                                          checked={layer.size.dynamic || true} 
-                                          onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.size.dynamic`, e.target.checked)}
-                                          className="rounded" 
+                                      <div className="space-y-2">
+                                        <input
+                                          type="range"
+                                          min="50"
+                                          max="1000"
+                                          value={typeof layer.size === 'object' ? 400 : layer.size}
+                                          onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.size`, parseInt(e.target.value))}
+                                          className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-[#429EA6]"
                                         />
-                                        <label className="text-xs text-gray-600">Dynamic Size</label>
+                                        <div className="flex justify-between items-center text-xs">
+                                          <span className="text-gray-500">50px</span>
+                                          <span className="text-sm font-medium text-gray-700">{typeof layer.size === 'object' ? 400 : layer.size}px</span>
+                                          <span className="text-gray-500">1000px</span>
+                                        </div>
                                       </div>
                                     </div>
                                   )}
                                   {layer.position && (
-                                    <>
-                                      <div>
-                                        <label className="block text-xs font-medium text-gray-600 mb-1">X Position</label>
-                                        <input 
-                                          type="text" 
-                                          value={layer.position.x || 'center'} 
-                                          onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.position.x`, e.target.value)}
-                                          className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#429EA6] focus:border-transparent"
+                                    <div>
+                                      <label className="block text-xs font-medium text-gray-600 mb-1">Y Position *</label>
+                                      <div className="space-y-2">
+                                        <input
+                                          type="range"
+                                          min="50"
+                                          max="550"
+                                          value={layer.position.y || 300}
+                                          onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.position.y`, parseInt(e.target.value))}
+                                          className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-[#429EA6]"
                                         />
+                                        <div className="flex justify-between items-center text-xs">
+                                          <span className="text-gray-500">50</span>
+                                          <span className="text-sm font-medium text-gray-700">{layer.position.y || 300}</span>
+                                          <span className="text-gray-500">550</span>
+                                        </div>
                                       </div>
-                                      <div>
-                                        <label className="block text-xs font-medium text-gray-600 mb-1">Y Position *</label>
-                                        <input 
-                                          type="text" 
-                                          value={layer.position.y || 'dynamic'} 
-                                          onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.position.y`, e.target.value)}
-                                          className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#429EA6] focus:border-transparent"
-                                        />
-                                        <p className="text-xs text-gray-500 mt-1">Range: 50-550</p>
-                                      </div>
-                                    </>
+                                    </div>
                                   )}
                                 </>
                               )}
-                              
+
+                              {/* ImageLayer */}
+                              {layerType === 'ImageLayer' && (
+                                <>
+                                  {layer.size !== undefined && (
+                                    <div>
+                                      <label className="block text-xs font-medium text-gray-600 mb-1">Size *</label>
+                                      <div className="space-y-2">
+                                        <input
+                                          type="range"
+                                          min="50"
+                                          max="500"
+                                          value={typeof layer.size === 'object' ? 400 : layer.size}
+                                          onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.size`, parseInt(e.target.value))}
+                                          className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-[#429EA6]"
+                                        />
+                                        <div className="flex justify-between items-center text-xs">
+                                          <span className="text-gray-500">50px</span>
+                                          <span className="text-sm font-medium text-gray-700">{typeof layer.size === 'object' ? 400 : layer.size}px</span>
+                                          <span className="text-gray-500">500px</span>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  )}
+                                </>
+                              )}
+
                               {/* TextLayer */}
                               {layerType === 'TextLayer' && (
                                 <>
@@ -1348,12 +1749,16 @@ export default function BadgeEditorPage() {
                                     <>
                                       <div>
                                         <label className="block text-xs font-medium text-gray-600 mb-1">Font Path</label>
-                                        <input 
-                                          type="text" 
-                                          value={layer.font.path || ''} 
-                                          onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.font.path`, e.target.value)}
+                                        <select
+                                          value={layer.font.path?.replace('assets/fonts/', '').replace('.ttf', '') || 'Arial'}
+                                          onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.font.path`, `assets/fonts/${e.target.value}.ttf`)}
                                           className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#429EA6] focus:border-transparent"
-                                        />
+                                        >
+                                          <option value="Arial">Arial</option>
+                                          <option value="ArialBold">Arial Bold</option>
+                                          <option value="OpenSans">Open Sans</option>
+                                          <option value="Roboto">Roboto</option>
+                                        </select>
                                       </div>
                                       <div>
                                         <label className="block text-xs font-medium text-gray-600 mb-1">Font Size *</label>
@@ -1384,52 +1789,37 @@ export default function BadgeEditorPage() {
                                     </div>
                                   </div>
                                   {layer.align && (
-                                    <>
-                                      <div>
-                                        <label className="block text-xs font-medium text-gray-600 mb-1">X Align</label>
-                                        <input 
-                                          type="text" 
-                                          value={layer.align.x || 'center'} 
-                                          onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.align.x`, e.target.value)}
-                                          className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#429EA6] focus:border-transparent"
+                                    <div>
+                                      <label className="block text-xs font-medium text-gray-600 mb-1">Y Align *</label>
+                                      <div className="space-y-2">
+                                        <input
+                                          type="range"
+                                          min="150"
+                                          max="850"
+                                          value={layer.align.y || 500}
+                                          onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.align.y`, parseInt(e.target.value))}
+                                          className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-[#429EA6]"
                                         />
-                                      </div>
-                                      <div>
-                                        <label className="block text-xs font-medium text-gray-600 mb-1">Y Align *</label>
-                                        <input 
-                                          type="text" 
-                                          value={layer.align.y || 'dynamic'} 
-                                          onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.align.y`, e.target.value)}
-                                          className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#429EA6] focus:border-transparent"
-                                        />
-                                        <p className="text-xs text-gray-500 mt-1">Range: 50-550</p>
-                                      </div>
-                                    </>
-                                  )}
-                                  {layer.wrap && (
-                                    <>
-                                      <div className="flex items-center space-x-2">
-                                        <input 
-                                          type="checkbox" 
-                                          checked={layer.wrap.dynamic || false} 
-                                          onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.wrap.dynamic`, e.target.checked)}
-                                          className="rounded" 
-                                        />
-                                        <label className="text-xs text-gray-600">Dynamic Wrap</label>
-                                      </div>
-                                      {layer.wrap.line_gap && (
-                                        <div>
-                                          <label className="block text-xs font-medium text-gray-600 mb-1">Line Gap</label>
-                                          <input 
-                                            type="number" 
-                                            value={layer.wrap.line_gap} 
-                                            onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.wrap.line_gap`, parseInt(e.target.value))}
-                                            className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#429EA6] focus:border-transparent"
-                                          />
+                                        <div className="flex justify-between items-center text-xs">
+                                          <span className="text-gray-500">150</span>
+                                          <span className="text-sm font-medium text-gray-700">{layer.align.y || 500}</span>
+                                          <span className="text-gray-500">850</span>
                                         </div>
-                                      )}
-                                    </>
+                                      </div>
+                                    </div>
                                   )}
+                                  {/* Line Gap */}
+                                  {/* {layer.wrap && layer.wrap.line_gap && (
+                                    <div>
+                                      <label className="block text-xs font-medium text-gray-600 mb-1">Line Gap</label>
+                                      <input
+                                        type="number"
+                                        value={layer.wrap.line_gap}
+                                        onChange={(e) => updateImageConfig(`layers.${activeLayerIndex}.wrap.line_gap`, parseInt(e.target.value))}
+                                        className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#429EA6] focus:border-transparent"
+                                      />
+                                    </div>
+                                  )} */}
                                 </>
                               )}
                               
@@ -1463,7 +1853,7 @@ export default function BadgeEditorPage() {
                     {generatedImage ? (
                       <img 
                         src={generatedImage} 
-                        alt="Generated Badge" 
+                        alt={badgeSuggestion?.title ? `${badgeSuggestion.title} generated badge image` : "Generated badge image"} 
                         className="max-w-full max-h-full object-contain relative z-10"
                       />
                     ) : (
@@ -1477,18 +1867,8 @@ export default function BadgeEditorPage() {
                 </div>
               </div>
             </div>
-            
-            {/* Loading Indicator */}
-            {isGeneratingImage && (
-              <div className="bg-gray-50 border-t border-gray-200 p-4">
-                <div className="flex items-center justify-center gap-2 text-sm text-gray-600">
-                  <div className="w-4 h-4 border-2 border-[#429EA6] border-t-transparent rounded-full animate-spin"></div>
-                  <span>Generating...</span>
-                </div>
-              </div>
-            )}
-          </DialogContent>
-        </Dialog>
-      </main>
+        </DialogContent>
+      </Dialog>
+    </main>
   );
 }
