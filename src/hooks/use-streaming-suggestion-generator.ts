@@ -26,9 +26,6 @@ export function useStreamingSuggestionGenerator() {
   const { toast } = useToast();
   const [suggestionCards, setSuggestionCards] = useState<SuggestionCard[]>([
     { id: 1, data: null, loading: false, error: null, streamingStarted: false },
-    { id: 2, data: null, loading: false, error: null, streamingStarted: false },
-    { id: 3, data: null, loading: false, error: null, streamingStarted: false },
-    { id: 4, data: null, loading: false, error: null, streamingStarted: false },
   ]);
   const [allCompleted, setAllCompleted] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -157,20 +154,35 @@ export function useStreamingSuggestionGenerator() {
     }
   }, [suggestionCards, isGenerating, justCompleted]);
 
-  const generateSingleSuggestionStream = useCallback(async (cardId: number, content: string, enableSkillExtraction: boolean = false) => {
+  const generateSingleSuggestionStream = useCallback(async (
+    cardId: number,
+    content: string,
+    enableSkillExtraction: boolean = false,
+    badgeConfig?: any,
+    userPrompt?: string
+  ) => {
     try {
-      
+
       // Set loading state (but don't mark as streaming started yet)
-      setSuggestionCards(prev => 
-        prev.map(card => 
-          card.id === cardId 
+      setSuggestionCards(prev =>
+        prev.map(card =>
+          card.id === cardId
             ? { ...card, loading: true, error: null, progress: 0, streamingText: 'Connecting to AI service...' }
             : card
         )
       );
 
       // Prepare additional parameters for the API
-      const additionalParams = enableSkillExtraction ? { enable_skill_extraction: true } : {};
+      const additionalParams: any = {};
+      if (enableSkillExtraction) {
+        additionalParams.enable_skill_extraction = true;
+      }
+      if (badgeConfig) {
+        Object.assign(additionalParams, badgeConfig);
+      }
+      if (userPrompt) {
+        additionalParams.custom_instructions = userPrompt;
+      }
       const stream = new StreamingApiClient().generateSuggestionsStream(content, additionalParams);
       
       for await (const response of stream) {
@@ -478,13 +490,24 @@ export function useStreamingSuggestionGenerator() {
       return;
     }
 
-    // Get LAiSER flag from localStorage
+    // Get LAiSER flag and badge configuration from localStorage
     let enableSkillExtraction = false;
+    let badgeConfig: any = null;
+    let userPrompt = '';
     try {
       const laiserEnabled = localStorage.getItem('isLaiserEnabled');
       enableSkillExtraction = laiserEnabled === 'true';
+
+      // Get badge configuration
+      const storedConfig = localStorage.getItem('badgeConfig');
+      if (storedConfig) {
+        badgeConfig = JSON.parse(storedConfig);
+      }
+
+      // Get user prompt
+      userPrompt = localStorage.getItem('userPrompt') || '';
     } catch (error) {
-      console.error('Error reading LAiSER flag from localStorage:', error);
+      console.error('Error reading from localStorage:', error);
     }
 
     setIsGenerating(true);
@@ -503,23 +526,13 @@ export function useStreamingSuggestionGenerator() {
     // Reset all cards to initial state
     setSuggestionCards([
       { id: 1, data: null, loading: false, error: null, streamingStarted: false },
-      { id: 2, data: null, loading: false, error: null, streamingStarted: false },
-      { id: 3, data: null, loading: false, error: null, streamingStarted: false },
-      { id: 4, data: null, loading: false, error: null, streamingStarted: false },
     ]);
 
-    // Generate all 4 suggestions in TRUE PARALLEL (no delays)
-    
-    // Create all promises immediately - they start executing right away
-    const promise1 = generateSingleSuggestionStream(1, originalContent, enableSkillExtraction);
-    const promise2 = generateSingleSuggestionStream(2, originalContent, enableSkillExtraction);
-    const promise3 = generateSingleSuggestionStream(3, originalContent, enableSkillExtraction);
-    const promise4 = generateSingleSuggestionStream(4, originalContent, enableSkillExtraction);
-    
-    
-    // Wait for all streams to complete
-    await Promise.allSettled([promise1, promise2, promise3, promise4]);
-    // await Promise.allSettled([promise1]);
+    // Generate single suggestion
+    const promise1 = generateSingleSuggestionStream(1, originalContent, enableSkillExtraction, badgeConfig, userPrompt);
+
+    // Wait for stream to complete
+    await Promise.allSettled([promise1]);
 
     // Note: Suggestions are saved to localStorage individually as they complete
     // (see 'final' and 'data' case handlers above). No bulk save needed here.

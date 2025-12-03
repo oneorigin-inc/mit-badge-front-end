@@ -57,9 +57,9 @@ export default function BadgeEditorPage() {
     criterion_style: 'task-oriented',
     badge_level: 'not-specified',
     institution: '',
-    institution_url: '',
+    institute_url: '',
+    user_prompt: ''
   });
-  const [userPrompt, setUserPrompt] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingRawContent, setStreamingRawContent] = useState('');
@@ -229,14 +229,21 @@ export default function BadgeEditorPage() {
     if (storedContent) {
       setOriginalContent(storedContent);
     }
+
+    // Get badge configuration from localStorage (from genai page)
+    const storedBadgeConfig = localStorage.getItem('badgeConfig');
+    if (storedBadgeConfig) {
+      try {
+        const config = JSON.parse(storedBadgeConfig);
+        setBadgeConfiguration(config);
+      } catch (error) {
+        console.error('Error parsing stored badge config:', error);
+      }
+    }
   }, []); // Empty dependency array since this should only run once on mount
 
   const handleConfigurationChange = useCallback((config: any) => {
     setBadgeConfiguration(config);
-  }, []);
-
-  const handleUserPromptChange = useCallback((prompt: string) => {
-    setUserPrompt(prompt);
   }, []);
 
   const handleEditImage = async () => {
@@ -585,7 +592,7 @@ export default function BadgeEditorPage() {
       
       for await (const response of apiClient.generateSuggestionsStream(originalContent, {
         regenerate: true,
-        custom_instructions: userPrompt,
+        custom_instructions: badgeConfiguration.user_prompt,
         ...badgeConfiguration,
       })) {
         
@@ -895,12 +902,11 @@ export default function BadgeEditorPage() {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-[calc(100vh-200px)]">
           {/* Column 1: Configuration */}
           <div className="lg:col-span-3">
-            <BadgeConfiguration 
+            <BadgeConfiguration
               onRegenerate={handleRegenerate}
               isRegenerating={isRegenerating}
               onConfigurationChange={handleConfigurationChange}
-              userPrompt={userPrompt}
-              onUserPromptChange={handleUserPromptChange}
+              initialConfig={badgeConfiguration}
             />
           </div>
 
