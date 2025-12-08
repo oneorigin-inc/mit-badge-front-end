@@ -31,7 +31,7 @@ const robotoBody = Roboto({
 });
 
 export const metadata: Metadata = {
-  title: 'BadgeSmith - AI-Powered Badge Creator',
+  title: 'Credential Co-writer',
   description:
     'Create OpenBadges with AI assistance. Analyze content, get suggestions for title, description, and criteria, and export in OpenBadge 3.0 format.',
 };
