@@ -44,6 +44,29 @@ export interface BadgeGenerationResult {
   data: BadgeSuggestion[];
 }
 
+// Previous badge retrieved from RAG (vector database)
+export interface PreviousBadge {
+  similarity_score: number;
+  badge_name: string;
+  badge_description: string;
+  criteria: { narrative: string };
+  credentialSubject?: any;
+  image_base64?: string;
+  alignment?: any[];
+  skills?: any[];
+  badge_configuration?: any;
+  course_input?: string;
+}
+
+// Previous badges response from RAG endpoint
+export interface PreviousBadgesResponse {
+  type: 'previous_badges';
+  content: PreviousBadge[];
+  count: number;
+  rag_available: boolean;
+  message: string;
+}
+
 // API Response types
 export interface ApiResponse<T = any> {
   success: boolean;

@@ -240,15 +240,15 @@ export function useStreamingSuggestionGenerator() {
         
         switch (response.type) {
           case 'start':
-            setSuggestionCards(prev => 
-              prev.map(card => 
-                card.id === cardId 
+            setSuggestionCards(prev =>
+              prev.map(card =>
+                card.id === cardId
                   ? { ...card, streamingText: 'AI stream started, waiting for response...' }
                   : card
               )
             );
             break;
-            
+
           case 'final':
             // Handle final response (type: "final")
             
@@ -574,7 +574,7 @@ export function useStreamingSuggestionGenerator() {
     setIsGenerating(true);
     setAllCompleted(false);
     setJustCompleted(false); // Reset flag for new generation
-    
+
     // Store generation state in localStorage
     try {
       localStorage.setItem('isGenerating', 'true');

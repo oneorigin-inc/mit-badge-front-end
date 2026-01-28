@@ -8,7 +8,8 @@ import type { BadgeSuggestion } from '@/lib/types';
 export const API_CONFIG = {
   BASE_URL: process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8001/api/v1',
   ENDPOINTS: {
-    GENERATE: '/generate-badge-suggestions/stream',
+    GENERATE: '/generate-badge-suggestions/stream-rag',
+    GET_PREVIOUS_BADGES: '/get-previous-badges',
   },
 } as const;
 
@@ -111,6 +112,29 @@ export class ApiClient {
 // Export singleton instance
 export const apiClient = new ApiClient();
 export default apiClient;
+
+// Previous badges API response type
+export interface PreviousBadgesApiResponse {
+  previous_badges: any[];
+  total_count: number;
+  query_summary: string;
+  rag_available: boolean;
+}
+
+// Get previous badges from RAG (vector database)
+export async function getPreviousBadges(courseInput: string, count: number = 4): Promise<PreviousBadgesApiResponse> {
+  const response = await fetch(`${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.GET_PREVIOUS_BADGES}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ course_input: courseInput, count })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch previous badges: ${response.status}`);
+  }
+
+  return response.json();
+}
 
 // Streaming types
 export interface StreamingResponse {
